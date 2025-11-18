@@ -1,0 +1,96 @@
+# ------------------------------------------------------------
+# PYTHON GITIGNORE RULES
+# ------------------------------------------------------------
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+env.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Model files (large YOLO, checkpoints, etc)
+*.pt
+*.pth
+*.onnx
+*.weights
+*.h5
+*.keras
+*.ckpt
+*.pb
+
+# Dataset files
+*.zip
+*.tar
+*.tar.gz
+*.rar
+data/
+datasets/
+
+# Training outputs
+runs/
+outputs/
+results/
+checkpoints/
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.log
+*.tmp
+*.swp
+
+# Ultralytics cache
+ultralytics/
+wandb/
+wandb/*
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.code-workspace
+
+# ------------------------------------------------------------
+# FASTAPI / ML SERVER SPECIFIC
+# ------------------------------------------------------------
+
+# Local compiled assets
+*.so
+*.dylib
+
+# Uploaded testing images
+uploads/
+frames/
+*.jpg
+*.jpeg
+*.png
+
+# ------------------------------------------------------------
+# ENVIRONMENT FILES
+# ------------------------------------------------------------
+
+.env
+.env.local
+.env.*.local
+
+# ------------------------------------------------------------
+# OTHER
+# ------------------------------------------------------------
+
+# Pip logs
+pip-log.txt
+pip-delete-this-directory.txt
