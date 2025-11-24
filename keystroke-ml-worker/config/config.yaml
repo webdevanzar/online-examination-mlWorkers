@@ -1,0 +1,32 @@
+# Model configuration
+model:
+  type: "statistical"  # or "svm"
+  threshold: 0.05
+  svm:
+    nu: 0.1
+    gamma: "scale"
+
+# Feature extraction
+features:
+  min_sequence_length: 10
+  max_sequence_length: 100
+  normalize: true
+
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: 8000
+  debug: true
+  workers: 4
+
+# Data storage
+storage:
+  raw_data_dir: "data/raw"
+  processed_dir: "data/processed"
+  models_dir: "data/models"
+
+# Security
+security:
+  max_auth_attempts: 3
+  lockout_time: 300  # seconds
+  require_https: true
