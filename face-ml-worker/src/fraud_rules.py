@@ -28,7 +28,7 @@ def check_fraud(faces, face_direction, frame):
     # Main face
     x1, y1, x2, y2 = faces[0]
     face_width = x2 - x1
-    face_height = y2 - y1
+    # face_height = y2 - y1
     face_center = ((x1 + x2) // 2, (y1 + y2) // 2)
 
     # 2. Multiple faces
