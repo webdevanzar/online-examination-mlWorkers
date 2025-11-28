@@ -83,3 +83,65 @@ def check_fraud(faces, face_direction, frame):
 
     return issues
 
+
+# Fraud severity classification
+FRAUD_SEVERITY = {
+    "minor": [
+        "Looking away",
+        "Face not centered",
+        "Face too close to camera",
+        "Face too far from camera",
+    ],
+    "major": [
+        "No face detected",
+        "Face missing repeatedly",
+        "Multiple faces detected",
+        "Rapid suspicious movement",
+        "Possible frozen screen or static image",
+        "Sudden brightness change detected",
+    ]
+}
+
+
+def classify_fraud_severity(issues: list) -> dict:
+    """
+    Classify fraud issues by severity.
+
+    Args:
+        issues: List of fraud issue strings
+
+    Returns:
+        dict: {
+            "minor": List of minor issues,
+            "major": List of major issues,
+            "has_major": bool indicating if any major fraud detected
+        }
+    """
+    minor = []
+    major = []
+
+    for issue in issues:
+        # Check if issue matches any major fraud pattern
+        is_major = False
+        for major_pattern in FRAUD_SEVERITY["major"]:
+            if major_pattern.lower() in issue.lower():
+                major.append(issue)
+                is_major = True
+                break
+
+        # If not major, check if minor
+        if not is_major:
+            for minor_pattern in FRAUD_SEVERITY["minor"]:
+                if minor_pattern.lower() in issue.lower():
+                    minor.append(issue)
+                    break
+            else:
+                # Default to minor if no pattern matches
+                minor.append(issue)
+
+    return {
+        "minor": minor,
+        "major": major,
+        "has_major": len(major) > 0
+    }
+

@@ -1,127 +1,131 @@
+# ml-workers/keystroke-ml-worker/src/api/app.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Optional
-import uuid
-from datetime import datetime
+from typing import List, Dict, Any
+import numpy as np
+import os
 
-from authentication.authenticator import KeystrokeAuthenticator
-from preprocessing.feature_extractor import FeatureExtractor
+# Import the storage and feature extractor
+from src.storage.keystroke_storage import KeystrokeStorage
+from src.preprocessing.feature_extractor import FeatureExtractor
 
-app = FastAPI(title="Keystroke Authentication API")
-auth = KeystrokeAuthenticator(models_dir="data/models")
+app = FastAPI()
+storage = KeystrokeStorage(
+    base_dir=os.path.join(os.path.dirname(__file__), "..", "models", "keystroke_models")
+)
+feature_extractor = FeatureExtractor()
 
-class KeystrokeSample(BaseModel):
-    user_id: str | None = None   # user_id optional for identification
-    keystrokes: List[Dict]       # {key, event, timestamp}
+
+class KeystrokeEvent(BaseModel):
+    key: str
+    event: str  # 'keydown' or 'keyup'
+    timestamp: float
+
+
+class KeystrokeRequest(BaseModel):
+    user_id: str
+    keystrokes: List[KeystrokeEvent]
     is_enrollment: bool = False
-
-class AuthResponse(BaseModel):
-    authenticated: bool
-    confidence: float
-    session_id: str
-    timestamp: str
+    metadata: Dict[str, Any] = {}
 
 
-@app.post("/authenticate", response_model=AuthResponse)
-async def authenticate(sample: KeystrokeSample):
-    """
-    SVM authentication: verifies if typing pattern matches the given user_id.
-    """
+@app.post("/enroll")
+async def enroll_keystroke(data: KeystrokeRequest):
     try:
-        extractor = FeatureExtractor()
-        features = extractor.extract_features(sample.keystrokes)
-
-        # Enrollment call
-        if sample.is_enrollment:
-            auth.enroll_user(sample.user_id, [features])
-            return AuthResponse(
-                authenticated=True,
-                confidence=1.0,
-                session_id=str(uuid.uuid4()),
-                timestamp=datetime.utcnow().isoformat()
+        if len(data.keystrokes) < 150:
+            raise HTTPException(
+                status_code=400,
+                detail="At least 150 keystrokes required for enrollment",
             )
 
-        # Verification call
-        is_match, confidence = auth.verify_user(sample.user_id, features)
-        return AuthResponse(
-            authenticated=is_match,
-            confidence=confidence,
-            session_id=str(uuid.uuid4()),
-            timestamp=datetime.utcnow().isoformat()
+        # Extract features
+        raw_features = feature_extractor.extract_features(
+            [k.dict() for k in data.keystrokes]
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raw_features = np.array(raw_features, dtype=float)
 
+        # ✅ Z-score normalization
+        mean = raw_features.mean()
+        std = raw_features.std() or 1.0
+        normalized_features = (raw_features - mean) / std
 
-class IdentifyTopKRequest(BaseModel):
-    keystrokes: List[Dict]
-    k: Optional[int] = 3
-
-
-@app.post("/identify/topk")
-async def identify_topk(req: IdentifyTopKRequest):
-    """
-    Return top-k users ranked by confidence.
-    """
-    try:
-        extractor = FeatureExtractor()
-        features = extractor.extract_features(req.keystrokes)
-        ranked = auth.identify_topk(features, k=req.k or 3)
-        return {
-            "topk": [
-                {"user_id": user_id, "confidence": conf}
-                for user_id, conf in ranked
-            ],
-            "k": req.k or 3,
-            "session_id": str(uuid.uuid4()),
-            "timestamp": datetime.utcnow().isoformat(),
+        model_data = {
+            "user_id": data.user_id,
+            "features": normalized_features.tolist(),
+            "scaler": {"mean": mean, "std": std},
+            "threshold": 0.85,  # ✅ cosine similarity baseline
+            "metadata": {
+                "keystroke_count": len(data.keystrokes),
+                "feature_vector_length": len(raw_features),
+            },
         }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
+        storage.save_model(data.user_id, model_data)
 
-@app.get("/users")
-async def list_users():
-    """
-    List all known users (trained or untrained) and their status.
-    """
-    try:
-        users = auth.list_users()
         return {
-            "users": [
-                {"user_id": u, **auth.get_user_status(u)} for u in users
-            ],
-            "count": len(users),
-            "timestamp": datetime.utcnow().isoformat(),
+            "success": True,
+            "message": "Keystroke enrollment completed",
+            "features": len(raw_features),
         }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
-@app.post("/identify")
-async def identify(sample: KeystrokeSample):
-    """
-    Identify the user based purely on typing (no user_id needed).
-    """
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/verify")
+async def verify_keystroke(data: KeystrokeRequest):
     try:
-        extractor = FeatureExtractor()
-        features = extractor.extract_features(sample.keystrokes)
-        user_id, confidence = auth.identify_user(features)
+        model_data = storage.load_model(data.user_id)
+        if not model_data:
+            raise HTTPException(404, "User not enrolled")
+
+        # Extract features
+        raw_features = feature_extractor.extract_features(
+            [k.dict() for k in data.keystrokes]
+        )
+
+        raw_features = np.array(raw_features, dtype=float)
+        stored_features = np.array(model_data["features"], dtype=float)
+
+        # ✅ Feature length check (CRITICAL)
+        if len(raw_features) != len(stored_features):
+            raise HTTPException(
+                400, "Feature length mismatch – inconsistent typing sample"
+            )
+
+        # ✅ Normalize using stored scaler
+        mean = model_data["scaler"]["mean"]
+        std = model_data["scaler"]["std"] or 1.0
+        normalized_features = (raw_features - mean) / std
+
+        # ✅ Cosine similarity
+        similarity = float(
+            np.dot(stored_features, normalized_features)
+            / (
+                np.linalg.norm(stored_features) * np.linalg.norm(normalized_features)
+                + 1e-8
+            )
+        )
+
+        threshold = model_data.get("threshold", 0.85)
+        authenticated = similarity >= threshold
+
+        confidence = max(0.0, min(1.0, (similarity - threshold) / (1 - threshold)))
 
         return {
-            "identified_user": user_id,
+            "authenticated": authenticated,
+            "similarity": similarity,
             "confidence": confidence,
-            "session_id": str(uuid.uuid4()),
-            "timestamp": datetime.utcnow().isoformat()
+            "threshold": threshold,
+            "user_id": data.user_id,
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(400, str(e))
 
 
-@app.get("/users/{user_id}/stats")
-async def get_user_stats(user_id: str):
-    """
-    Check whether a user model exists and is trained.
-    """
-    return auth.get_user_status(user_id)
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "ok", "storage_path": str(storage.base_dir.absolute())}

@@ -1,76 +1,81 @@
-# feature_extractor.py
 import numpy as np
 from collections import defaultdict
 
+
 class FeatureExtractor:
-    def __init__(self):
-        self.features = {
-            'hold_times': defaultdict(list),  # PR (Press-Release)
-            'inter_key_press': defaultdict(list),  # PP
-            'inter_key_release': defaultdict(list),  # RR
-            'release_press': defaultdict(list),  # RP
-        }
-        
     def extract_features(self, keystroke_data):
-        # Group by key
+        # ✅ Reset per call
+        features = {
+            "hold_times": defaultdict(list),
+            "inter_key_press": defaultdict(list),
+            "inter_key_release": defaultdict(list),
+            "release_press": defaultdict(list),
+        }
+
+        # Group events by key
         key_events = defaultdict(list)
         for event in keystroke_data:
-            key_events[event['key']].append(event)
-            
-        # Calculate timing features
+            key_events[event["key"]].append(event)
+
+        # Hold time: keydown → keyup
         for key, events in key_events.items():
-            presses = [e for e in events if e['event'] == 'press']
-            releases = [e for e in events if e['event'] == 'release']
-            
-            # Hold time (PR)
+            presses = [e for e in events if e["event"] == "keydown"]
+            releases = [e for e in events if e["event"] == "keyup"]
+
             for p, r in zip(presses, releases):
-                if p['timestamp'] < r['timestamp']:  # Ensure press before release
-                    self.features['hold_times'][key].append(r['timestamp'] - p['timestamp'])
-                    
-        # Calculate inter-key timings
-        for i in range(len(keystroke_data)-1):
+                if p["timestamp"] < r["timestamp"]:
+                    features["hold_times"][key].append(r["timestamp"] - p["timestamp"])
+
+        # Inter-key timings
+        for i in range(len(keystroke_data) - 1):
             curr = keystroke_data[i]
-            next_evt = keystroke_data[i+1]
-            
-            if curr['event'] == 'press' and next_evt['event'] == 'press':
-                self.features['inter_key_press'][f"{curr['key']}-{next_evt['key']}"] = (
-                    next_evt['timestamp'] - curr['timestamp']
-                )
-            elif curr['event'] == 'release' and next_evt['event'] == 'release':
-                self.features['inter_key_release'][f"{curr['key']}-{next_evt['key']}"] = (
-                    next_evt['timestamp'] - curr['timestamp']
-                )
-            elif curr['event'] == 'release' and next_evt['event'] == 'press':
-                self.features['release_press'][f"{curr['key']}-{next_evt['key']}"] = (
-                    next_evt['timestamp'] - curr['timestamp']
-                )
-                
-        return self._aggregate_features()
-        
-    def _aggregate_features(self):
-        """Convert features to fixed-length vector"""
+            next_evt = keystroke_data[i + 1]
+
+            delta = next_evt["timestamp"] - curr["timestamp"]
+            pair = f"{curr['key']}-{next_evt['key']}"
+
+            if curr["event"] == "keydown" and next_evt["event"] == "keydown":
+                features["inter_key_press"][pair].append(delta)
+
+            elif curr["event"] == "keyup" and next_evt["event"] == "keyup":
+                features["inter_key_release"][pair].append(delta)
+
+            elif curr["event"] == "keyup" and next_evt["event"] == "keydown":
+                features["release_press"][pair].append(delta)
+
+        return self._aggregate_features(features)
+
+    def _aggregate_features(self, features):
         feature_vector = []
-        
-        # Add hold time statistics
-        for key in sorted(self.features['hold_times'].keys()):
-            times = self.features['hold_times'][key]
+
+        for key in sorted(features["hold_times"]):
+            times = features["hold_times"][key]
             if times:
-                feature_vector.extend([
-                    np.mean(times),
-                    np.std(times) if len(times) > 1 else 0,
-                    np.min(times),
-                    np.max(times)
-                ])
-                
-        # Add inter-key timing statistics
-        for timing_type in ['inter_key_press', 'inter_key_release', 'release_press']:
-            times = list(self.features[timing_type].values())
+                feature_vector.extend(
+                    [
+                        np.mean(times),
+                        np.std(times),
+                        np.min(times),
+                        np.max(times),
+                    ]
+                )
+
+        for timing_type in ["inter_key_press", "inter_key_release", "release_press"]:
+            times = []
+            for v in features[timing_type].values():
+                times.extend(v)
+
             if times:
-                feature_vector.extend([
-                    np.mean(times),
-                    np.std(times) if len(times) > 1 else 0,
-                    np.min(times),
-                    np.max(times)
-                ])
-                
+                feature_vector.extend(
+                    [
+                        np.mean(times),
+                        np.std(times),
+                        np.min(times),
+                        np.max(times),
+                    ]
+                )
+
+        if not feature_vector:
+            raise ValueError("No keystroke features extracted")
+
         return np.array(feature_vector)
