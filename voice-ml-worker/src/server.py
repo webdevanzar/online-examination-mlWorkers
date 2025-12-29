@@ -3,7 +3,7 @@ import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any
-from audio_detector import listen_and_detect, vad
+from .audio_detector import listen_and_detect, vad
 import uvicorn
 from pydantic import BaseModel, Field
 

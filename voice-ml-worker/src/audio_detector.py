@@ -1,5 +1,5 @@
 import sounddevice as sd
-from vad_engine import VoiceVAD
+from .vad_engine import VoiceVAD
 from typing import Generator, Dict, Any
 import time
 import numpy as np

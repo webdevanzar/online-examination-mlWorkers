@@ -14,7 +14,7 @@ from src.detector import FaceDetector
 from src.object_detector import ObjectDetector
 from src.fraud_rules import check_fraud, classify_fraud_severity
 from src.object_rules import check_objects_for_fraud
-from src.face_verifier import FaceVerifier
+from src.face_verifier_mock import FaceVerifier
 import requests
 import tempfile
 
