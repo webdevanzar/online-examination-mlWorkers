@@ -110,11 +110,24 @@ class KeystrokeStorage:
             logger.error(f"Failed to delete model for user {user_id}: {str(e)}")
             return False
 
+    def model_exists(self, user_id: str) -> bool:
+        """
+        Check if a keystroke model exists for a user.
+
+        Args:
+            user_id: Unique user identifier
+
+        Returns:
+            True if model exists, False otherwise
+        """
+        model_path = self._get_model_path(user_id)
+        return model_path.exists()
+
     def list_models(self) -> list[str]:
         """List all stored model user IDs"""
         try:
             return [
-                f.stem for f in self.base_dir.glob("*.json") 
+                f.stem for f in self.base_dir.glob("*.json")
                 if f.is_file() and not f.name.startswith('.')
             ]
         except Exception as e:

@@ -91,7 +91,9 @@ async def verify_keystroke(data: KeystrokeRequest):
         # ✅ Feature length check (CRITICAL)
         if len(raw_features) != len(stored_features):
             raise HTTPException(
-                400, "Feature length mismatch – inconsistent typing sample"
+                400,
+                f"Feature length mismatch: current={len(raw_features)}, enrolled={len(stored_features)}. "
+                f"Please re-enroll your typing profile to fix this issue."
             )
 
         # ✅ Normalize using stored scaler
@@ -129,3 +131,10 @@ async def verify_keystroke(data: KeystrokeRequest):
 async def health_check():
     """Health check endpoint"""
     return {"status": "ok", "storage_path": str(storage.base_dir.absolute())}
+
+
+@app.get("/check-model/{user_id}")
+async def check_model(user_id: str):
+    """Check if a keystroke model exists for a user"""
+    exists = storage.model_exists(user_id)
+    return {"exists": exists, "user_id": user_id}

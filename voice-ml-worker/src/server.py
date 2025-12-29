@@ -6,6 +6,7 @@ from typing import Dict, Any
 from .audio_detector import listen_and_detect, vad
 import uvicorn
 from pydantic import BaseModel, Field
+import numpy as np
 
 app = FastAPI(title="Voice ML Worker")
 
@@ -30,6 +31,21 @@ _latest_result: Dict[str, Any] = {
 # background thread control
 _stop_event = threading.Event()
 _detector_thread = None
+
+def convert_numpy_types(obj: Any) -> Any:
+    """Convert numpy types to Python native types for JSON serialization."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    else:
+        return obj
 
 def detector_thread_fn():
     global _latest_result
@@ -76,7 +92,8 @@ def voice_status():
     Poll this endpoint periodically from front-end (e.g. every 300-500 ms).
     """
     with _latest_lock:
-        return _latest_result
+        # Convert numpy types to Python native types for JSON serialization
+        return convert_numpy_types(_latest_result)
 
 @app.get("/voice/health")
 def voice_health():
@@ -85,13 +102,13 @@ def voice_health():
         cfg = vad.get_config()
         with _latest_lock:
             status = _latest_result.get("status", "unknown")
-        return {"status": status, "model": "silero_vad", "config": cfg}
+        return convert_numpy_types({"status": status, "model": "silero_vad", "config": cfg})
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 @app.get("/voice/config")
 def get_config():
-    return vad.get_config()
+    return convert_numpy_types(vad.get_config())
 
 @app.post("/voice/config")
 def update_config(payload: ConfigUpdateModel):
@@ -104,7 +121,7 @@ def update_config(payload: ConfigUpdateModel):
         sustain_ms=data.get("sustain_ms"),
         history_window=data.get("history_window"),
     )
-    return {"ok": True, "config": vad.get_config()}
+    return convert_numpy_types({"ok": True, "config": vad.get_config()})
 
 @app.post("/voice/start")
 def start_detection():

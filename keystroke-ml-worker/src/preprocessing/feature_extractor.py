@@ -46,36 +46,49 @@ class FeatureExtractor:
         return self._aggregate_features(features)
 
     def _aggregate_features(self, features):
+        """
+        Create fixed-length feature vector using aggregate statistics only.
+        This ensures consistent feature vector length regardless of which keys are typed.
+        """
         feature_vector = []
 
-        for key in sorted(features["hold_times"]):
-            times = features["hold_times"][key]
-            if times:
-                feature_vector.extend(
-                    [
-                        np.mean(times),
-                        np.std(times),
-                        np.min(times),
-                        np.max(times),
-                    ]
-                )
+        # ✅ Aggregate hold times across ALL keys (not per-key)
+        all_hold_times = []
+        for key, times in features["hold_times"].items():
+            all_hold_times.extend(times)
 
+        if all_hold_times:
+            feature_vector.extend([
+                np.mean(all_hold_times),
+                np.std(all_hold_times),
+                np.min(all_hold_times),
+                np.max(all_hold_times),
+                np.median(all_hold_times),
+            ])
+        else:
+            # Add zeros if no hold times
+            feature_vector.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+
+        # ✅ Aggregate timing statistics for each timing type
         for timing_type in ["inter_key_press", "inter_key_release", "release_press"]:
             times = []
             for v in features[timing_type].values():
                 times.extend(v)
 
             if times:
-                feature_vector.extend(
-                    [
-                        np.mean(times),
-                        np.std(times),
-                        np.min(times),
-                        np.max(times),
-                    ]
-                )
+                feature_vector.extend([
+                    np.mean(times),
+                    np.std(times),
+                    np.min(times),
+                    np.max(times),
+                    np.median(times),
+                ])
+            else:
+                # Add zeros if no timing data for this type
+                feature_vector.extend([0.0, 0.0, 0.0, 0.0, 0.0])
 
-        if not feature_vector:
+        if not feature_vector or len(feature_vector) == 0:
             raise ValueError("No keystroke features extracted")
 
+        # ✅ Always returns 20 features (4 types × 5 stats each)
         return np.array(feature_vector)
