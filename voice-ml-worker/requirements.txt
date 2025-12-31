@@ -5,3 +5,4 @@ numpy
 sounddevice
 scipy
 torch
+python-socketio

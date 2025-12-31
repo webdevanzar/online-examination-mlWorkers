@@ -7,6 +7,8 @@ from .audio_detector import listen_and_detect, vad
 import uvicorn
 from pydantic import BaseModel, Field
 import numpy as np
+import socketio
+import os
 
 app = FastAPI(title="Voice ML Worker")
 
@@ -18,6 +20,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Socket.IO client for pushing detections to backend
+sio = socketio.Client()
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
+
+# Track active monitoring sessions: attemptId -> isActive
+_active_attempts: Dict[str, bool] = {}
+_active_lock = threading.Lock()
 
 # Shared storage for latest detection
 _latest_lock = threading.Lock()
@@ -47,6 +57,33 @@ def convert_numpy_types(obj: Any) -> Any:
     else:
         return obj
 
+# Socket.IO event handlers
+@sio.event
+def connect():
+    print("🔌 Connected to backend Socket.IO server")
+
+@sio.event
+def disconnect():
+    print("🔌 Disconnected from backend Socket.IO server")
+
+@sio.on("voice:start_monitoring")
+def handle_start_monitoring(data):
+    """Backend tells ML worker to start monitoring for an attemptId"""
+    attempt_id = data.get("attemptId")
+    if attempt_id:
+        with _active_lock:
+            _active_attempts[attempt_id] = True
+        print(f"🎤 Started voice monitoring for attempt: {attempt_id}")
+
+@sio.on("voice:stop_monitoring")
+def handle_stop_monitoring(data):
+    """Backend tells ML worker to stop monitoring for an attemptId"""
+    attempt_id = data.get("attemptId")
+    if attempt_id:
+        with _active_lock:
+            _active_attempts.pop(attempt_id, None)
+        print(f"🛑 Stopped voice monitoring for attempt: {attempt_id}")
+
 def detector_thread_fn():
     global _latest_result
     gen = listen_and_detect()
@@ -54,6 +91,31 @@ def detector_thread_fn():
     for res in gen:
         with _latest_lock:
             _latest_result.update(res)
+
+        # Emit detection to backend via Socket.IO
+        speech_prob = res.get("speech_probability", 0.0)
+        issues = res.get("issues", [])
+
+        # Only emit if speech detected above threshold
+        if speech_prob > 0.3 and issues:
+            # Get all active attemptIds
+            with _active_lock:
+                active_ids = list(_active_attempts.keys())
+
+            # Emit detection for each active attempt
+            for attempt_id in active_ids:
+                if sio.connected:
+                    try:
+                        sio.emit("voice:detection", {
+                            "attemptId": attempt_id,
+                            "speech_probability": float(speech_prob),
+                            "issues": issues,
+                            "risk_score": min(1.0, float(speech_prob) * 1.5),
+                        })
+                        print(f"📡 Emitted voice detection for {attempt_id}: {speech_prob:.2f}")
+                    except Exception as e:
+                        print(f"❌ Failed to emit detection: {e}")
+
         if _stop_event.is_set():
             break
     _latest_result["status"] = "stopped"
@@ -78,12 +140,24 @@ def startup_event():
     _detector_thread = threading.Thread(target=detector_thread_fn, daemon=True)
     _detector_thread.start()
 
+    # Connect to backend Socket.IO
+    try:
+        sio.connect(BACKEND_URL, wait_timeout=10)
+        print(f"✅ Socket.IO connected to {BACKEND_URL}")
+    except Exception as e:
+        print(f"⚠️ Failed to connect to backend Socket.IO: {e}")
+        print("   Voice detection will continue locally but won't push to backend")
+
 @app.on_event("shutdown")
 def shutdown_event():
     global _stop_event, _detector_thread
     _stop_event.set()
     if _detector_thread:
         _detector_thread.join(timeout=2.0)
+
+    # Disconnect Socket.IO
+    if sio.connected:
+        sio.disconnect()
 
 @app.get("/voice-status")
 def voice_status():

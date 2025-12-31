@@ -1,119 +1,251 @@
-import face_recognition
-import numpy as np
 import cv2
+import numpy as np
+from keras_facenet import FaceNet
 from typing import Optional, List, Tuple
-# import tempfile
-# import os
 
 
 class FaceVerifier:
     """
-    Handles face encoding and verification using face_recognition library.
-    Compares live frames against reference video for identity verification.
+    Face enrollment & verification using OpenCV DNN + FaceNet.
+    No dlib or MediaPipe required - works reliably on Windows!
     """
 
     def __init__(self):
-        self.reference_encodings = {}  # {user_id: [encoding1, encoding2, ...]}
+        self.reference_encodings: dict[str, List[np.ndarray]] = {}
 
-    def extract_encodings_from_video(self, video_path: str, max_frames: int = 10) -> List[np.ndarray]:
+        # Initialize OpenCV DNN Face Detector (built-in, no extra downloads needed)
+        # Using Caffe model - lightweight and fast
+        try:
+            # Try to use DNN face detector (more accurate)
+            model_file = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            self.face_cascade = cv2.CascadeClassifier(model_file)
+            print("✓ OpenCV Haar Cascade face detector loaded")
+        except Exception as e:
+            print(f"Warning: Could not load face detector: {e}")
+            self.face_cascade = None
+
+        # Initialize FaceNet for embeddings
+        print("Loading FaceNet model...")
+        self.facenet = FaceNet()
+        print("✓ FaceNet model loaded")
+
+    def _auto_rotate(self, frame: np.ndarray) -> np.ndarray:
+        """Rotate portrait frames to landscape."""
+        h, w = frame.shape[:2]
+        if h > w:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        return frame
+
+    def _ensure_uint8(self, frame: np.ndarray) -> np.ndarray:
+        """Ensure frame is uint8 type."""
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.uint8)
+        return frame
+
+    def extract_face_embedding(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """
-        Extract face encodings from video - samples max_frames frames evenly distributed.
+        Extract face embedding from a single frame.
+
+        Args:
+            frame: BGR image from OpenCV
+
+        Returns:
+            128-dimensional face embedding or None if no face detected
+        """
+        if frame is None or frame.size == 0:
+            return None
+
+        # Auto-rotate if needed
+        frame = self._auto_rotate(frame)
+        frame = self._ensure_uint8(frame)
+
+        # Convert to grayscale for face detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Detect faces with OpenCV Haar Cascade
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30)
+        )
+
+        if len(faces) == 0:
+            return None
+
+        # Get first detected face (x, y, w, h)
+        x, y, w, h = faces[0]
+
+        # Add padding
+        padding = int(max(w, h) * 0.2)
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(frame.shape[1], x + w + padding)
+        y2 = min(frame.shape[0], y + h + padding)
+
+        # Crop face from original BGR frame
+        face_crop = frame[y1:y2, x1:x2]
+
+        if face_crop.size == 0:
+            return None
+
+        # Convert to RGB for FaceNet
+        face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+
+        # Resize to 160x160 (FaceNet input size)
+        face_resized = cv2.resize(face_rgb, (160, 160))
+
+        # Normalize pixel values
+        face_normalized = face_resized.astype(np.float32) / 255.0
+
+        # Get embedding from FaceNet
+        # FaceNet expects batch dimension
+        face_batch = np.expand_dims(face_normalized, axis=0)
+        embedding = self.facenet.embeddings(face_batch)
+
+        return embedding[0]  # Return first (and only) embedding
+
+    def extract_encodings_from_video(
+        self,
+        video_path: str,
+        max_frames: int = 30
+    ) -> List[np.ndarray]:
+        """
+        Extract face embeddings from video.
 
         Args:
             video_path: Path to video file
-            max_frames: Maximum number of frames to sample (default 10)
+            max_frames: Maximum number of frames to process
 
         Returns:
-            List of face encodings (128-dimensional vectors)
+            List of face embeddings
         """
         cap = cv2.VideoCapture(video_path)
-        encodings = []
-        frame_count = 0
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
+
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        if total_frames == 0:
-            cap.release()
-            return encodings
-
+        fps = cap.get(cv2.CAP_PROP_FPS)
         interval = max(1, total_frames // max_frames)
 
-        while len(encodings) < max_frames and cap.isOpened():
+        encodings: List[np.ndarray] = []
+        frame_idx = 0
+        faces_detected = 0
+
+        print(f"Video info - Frames: {total_frames}, FPS: {fps}")
+        print(f"Processing every {interval} frame(s)")
+
+        while cap.isOpened() and len(encodings) < max_frames:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            if frame_count % interval == 0:
-                # Convert BGR to RGB for face_recognition
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                face_encodings = face_recognition.face_encodings(rgb_frame)
-                if len(face_encodings) > 0:
-                    encodings.append(face_encodings[0])
+            if frame_idx % interval != 0:
+                frame_idx += 1
+                continue
 
-            frame_count += 1
+            # Try to extract embedding
+            embedding = self.extract_face_embedding(frame)
+
+            if embedding is not None:
+                encodings.append(embedding)
+                faces_detected += 1
+                print(f"Frame {frame_idx}: ✓ Face detected, embedding extracted ({len(encodings)} total)")
+            else:
+                print(f"Frame {frame_idx}: ✗ No face detected")
+
+            frame_idx += 1
 
         cap.release()
+
+        print(f"\n=== Summary ===")
+        print(f"Frames processed: {frame_idx}")
+        print(f"Faces detected: {faces_detected}")
+        print(f"Embeddings extracted: {len(encodings)}")
+
         return encodings
 
-    def extract_encoding_from_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
+    def enroll_user(
+        self,
+        user_id: str,
+        video_path: str,
+        min_samples: int = 2
+    ) -> Tuple[bool, str]:
         """
-        Extract face encoding from single frame (BGR format).
+        Enroll user by extracting face embeddings from selfie video.
 
         Args:
-            frame: OpenCV image in BGR format
+            user_id: Unique user identifier
+            video_path: Path to selfie video
+            min_samples: Minimum number of face samples required
 
         Returns:
-            Face encoding (128-dimensional vector) or None if no face found
+            Tuple of (success, message)
         """
-        # Convert BGR to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_encodings = face_recognition.face_encodings(rgb_frame)
-        return face_encodings[0] if len(face_encodings) > 0 else None
+        print(f"\n=== Enrolling user: {user_id} ===")
 
-    def enroll_user(self, user_id: str, video_path: str) -> Tuple[bool, str]:
-        """
-        Enroll user by extracting face encodings from selfie video.
+        try:
+            embeddings = self.extract_encodings_from_video(video_path)
 
-        Args:
-            user_id: Unique identifier for the user
-            video_path: Path to selfie video file
+            if len(embeddings) < min_samples:
+                return False, (
+                    f"Enrollment failed. Found {len(embeddings)} face samples, need at least {min_samples}.\n"
+                    "Tips:\n"
+                    "- Ensure face is clearly visible and well-lit\n"
+                    "- Face should be looking at camera\n"
+                    "- Video should be 3-5 seconds long\n"
+                    "- Avoid motion blur"
+                )
 
-        Returns:
-            Tuple of (success: bool, message: str)
-        """
-        encodings = self.extract_encodings_from_video(video_path)
+            self.reference_encodings[user_id] = embeddings
+            print(f"✓ User {user_id} enrolled successfully with {len(embeddings)} samples\n")
+            return True, f"Successfully enrolled with {len(embeddings)} face samples"
 
-        if len(encodings) < 3:  # Need at least 3 good encodings
-            return False, f"Could not extract enough face samples. Found {len(encodings)}, need at least 3."
+        except Exception as e:
+            print(f"✗ Enrollment failed: {str(e)}")
+            return False, f"Enrollment error: {str(e)}"
 
-        self.reference_encodings[user_id] = encodings
-        return True, f"Successfully enrolled with {len(encodings)} face samples"
-
-    def verify_face(self, user_id: str, frame: np.ndarray, threshold: float = 0.6) -> Tuple[bool, float, str]:
+    def verify_face(
+        self,
+        user_id: str,
+        frame: np.ndarray,
+        threshold: float = 0.6
+    ) -> Tuple[bool, float, str]:
         """
         Verify if face in frame matches enrolled user.
 
         Args:
-            user_id: User ID to verify against
-            frame: OpenCV image in BGR format
-            threshold: Distance threshold (lower = stricter). 0.6 is standard, 0.5 is strict
+            user_id: User ID to verify
+            frame: BGR frame from OpenCV
+            threshold: Distance threshold (lower = stricter)
 
         Returns:
-            Tuple of (is_match: bool, confidence: float, message: str)
+            Tuple of (is_match, confidence, message)
         """
         if user_id not in self.reference_encodings:
             return False, 0.0, "User not enrolled"
 
-        current_encoding = self.extract_encoding_from_frame(frame)
-        if current_encoding is None:
+        # Extract embedding from current frame
+        current_embedding = self.extract_face_embedding(frame)
+
+        if current_embedding is None:
             return False, 0.0, "No face detected in frame"
 
-        reference_encodings = self.reference_encodings[user_id]
-        distances = face_recognition.face_distance(reference_encodings, current_encoding)
+        # Compare with stored embeddings
+        reference_embeddings = self.reference_encodings[user_id]
+
+        # Calculate Euclidean distances
+        distances = []
+        for ref_embedding in reference_embeddings:
+            distance = np.linalg.norm(ref_embedding - current_embedding)
+            distances.append(distance)
+
         min_distance = float(np.min(distances))
 
         # Convert distance to confidence (0-1 scale)
-        # Lower distance = higher confidence
-        confidence = max(0.0, 1.0 - min_distance)
+        # FaceNet: distance < 10 is usually same person
+        # Normalize to 0-1 scale
+        confidence = max(0.0, 1.0 - (min_distance / 10.0))
         is_match = min_distance <= threshold
 
         message = "Face verified" if is_match else f"Face does not match (distance: {min_distance:.3f})"
@@ -130,3 +262,7 @@ class FaceVerifier:
             del self.reference_encodings[user_id]
             return True
         return False
+
+    def __del__(self):
+        """Cleanup resources."""
+        pass  # OpenCV Haar Cascade doesn't require explicit cleanup

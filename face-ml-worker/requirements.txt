@@ -3,6 +3,6 @@ ultralytics
 numpy
 fastapi
 uvicorn
-face_recognition
-dlib
 requests
+tensorflow
+keras-facenet
