@@ -53,6 +53,7 @@ class FaceVerifier:
             128-dimensional face embedding or None if no face detected
         """
         if frame is None or frame.size == 0:
+            print("[EXTRACT] Frame is None or empty")
             return None
 
         # Auto-rotate if needed
@@ -71,10 +72,14 @@ class FaceVerifier:
         )
 
         if len(faces) == 0:
+            print(f"[EXTRACT] No faces detected in frame of shape {frame.shape}")
             return None
+
+        print(f"[EXTRACT] Detected {len(faces)} face(s) in frame")
 
         # Get first detected face (x, y, w, h)
         x, y, w, h = faces[0]
+        print(f"[EXTRACT] Face bbox: x={x}, y={y}, w={w}, h={h}")
 
         # Add padding
         padding = int(max(w, h) * 0.2)
@@ -87,7 +92,10 @@ class FaceVerifier:
         face_crop = frame[y1:y2, x1:x2]
 
         if face_crop.size == 0:
+            print("[EXTRACT] Face crop is empty after padding")
             return None
+
+        print(f"[EXTRACT] Face crop shape: {face_crop.shape}")
 
         # Convert to RGB for FaceNet
         face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
@@ -103,7 +111,11 @@ class FaceVerifier:
         face_batch = np.expand_dims(face_normalized, axis=0)
         embedding = self.facenet.embeddings(face_batch)
 
-        return embedding[0]  # Return first (and only) embedding
+        emb = embedding[0]  # Return first (and only) embedding
+        print(f"[EXTRACT] Embedding extracted: shape={emb.shape}, norm={np.linalg.norm(emb):.4f}")
+        print(f"[EXTRACT] Embedding sample (first 5 values): {emb[:5]}")
+
+        return emb
 
     def extract_encodings_from_video(
         self,
@@ -209,7 +221,7 @@ class FaceVerifier:
         self,
         user_id: str,
         frame: np.ndarray,
-        threshold: float = 0.6
+        threshold: float = 0.4
     ) -> Tuple[bool, float, str]:
         """
         Verify if face in frame matches enrolled user.
@@ -217,7 +229,8 @@ class FaceVerifier:
         Args:
             user_id: User ID to verify
             frame: BGR frame from OpenCV
-            threshold: Distance threshold (lower = stricter)
+            threshold: Distance threshold (lower = stricter, default 0.4)
+                      FaceNet typical: same person 0.0-0.4, different 0.6+
 
         Returns:
             Tuple of (is_match, confidence, message)
@@ -236,17 +249,26 @@ class FaceVerifier:
 
         # Calculate Euclidean distances
         distances = []
-        for ref_embedding in reference_embeddings:
+        for i, ref_embedding in enumerate(reference_embeddings):
             distance = np.linalg.norm(ref_embedding - current_embedding)
             distances.append(distance)
+            print(f"Distance to enrolled sample {i+1}: {distance:.4f}")
 
         min_distance = float(np.min(distances))
+        avg_distance = float(np.mean(distances))
 
-        # Convert distance to confidence (0-1 scale)
-        # FaceNet: distance < 10 is usually same person
-        # Normalize to 0-1 scale
-        confidence = max(0.0, 1.0 - (min_distance / 10.0))
+        # Correct confidence calculation
+        # If distance is 0.0 = 100% confidence
+        # If distance is at threshold = 0% confidence
+        if min_distance <= threshold:
+            confidence = 1.0 - (min_distance / threshold)
+        else:
+            confidence = 0.0
+
         is_match = min_distance <= threshold
+
+        print(f"[VERIFY] Min distance: {min_distance:.4f}, Avg: {avg_distance:.4f}, Threshold: {threshold}")
+        print(f"[VERIFY] Is Match: {is_match}, Confidence: {confidence:.4f} ({confidence*100:.1f}%)")
 
         message = "Face verified" if is_match else f"Face does not match (distance: {min_distance:.3f})"
 

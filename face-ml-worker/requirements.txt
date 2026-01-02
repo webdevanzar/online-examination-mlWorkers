@@ -6,3 +6,5 @@ uvicorn
 requests
 tensorflow
 keras-facenet
+deepface
+tf-keras

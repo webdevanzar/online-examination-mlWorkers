@@ -6,3 +6,4 @@ sounddevice
 scipy
 torch
 python-socketio
+requests

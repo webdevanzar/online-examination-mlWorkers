@@ -8,6 +8,7 @@ import uvicorn
 from pydantic import BaseModel, Field
 import numpy as np
 import socketio
+import requests
 import os
 
 app = FastAPI(title="Voice ML Worker")
@@ -102,19 +103,26 @@ def detector_thread_fn():
             with _active_lock:
                 active_ids = list(_active_attempts.keys())
 
-            # Emit detection for each active attempt
+            # Send detection to backend via HTTP for each active attempt
             for attempt_id in active_ids:
-                if sio.connected:
-                    try:
-                        sio.emit("voice:detection", {
+                try:
+                    response = requests.post(
+                        f"{BACKEND_URL}/api/proctoring/voice-detection",
+                        json={
                             "attemptId": attempt_id,
                             "speech_probability": float(speech_prob),
                             "issues": issues,
                             "risk_score": min(1.0, float(speech_prob) * 1.5),
-                        })
-                        print(f"📡 Emitted voice detection for {attempt_id}: {speech_prob:.2f}")
-                    except Exception as e:
-                        print(f"❌ Failed to emit detection: {e}")
+                        },
+                        timeout=5
+                    )
+                    if response.status_code == 200:
+                        print(f"📡 Sent voice detection for {attempt_id}: {speech_prob:.2f}")
+                        print(f"✅ Successfully sent voice detection for {attempt_id}")
+                    else:
+                        print(f"⚠️  Backend returned {response.status_code} for {attempt_id}")
+                except Exception as e:
+                    print(f"❌ Failed to send detection to backend: {e}")
 
         if _stop_event.is_set():
             break
@@ -212,6 +220,25 @@ def stop_detection():
     global _stop_event
     _stop_event.set()
     return {"status": "stopping"}
+
+class MonitoringRequest(BaseModel):
+    attemptId: str
+
+@app.post("/voice/start-monitoring")
+def start_monitoring_http(data: MonitoringRequest):
+    """HTTP endpoint to start monitoring an attempt"""
+    with _active_lock:
+        _active_attempts[data.attemptId] = True
+    print(f"🎤 Started voice monitoring for attempt: {data.attemptId}")
+    return {"ok": True, "attemptId": data.attemptId}
+
+@app.post("/voice/stop-monitoring")
+def stop_monitoring_http(data: MonitoringRequest):
+    """HTTP endpoint to stop monitoring an attempt"""
+    with _active_lock:
+        _active_attempts.pop(data.attemptId, None)
+    print(f"🛑 Stopped voice monitoring for attempt: {data.attemptId}")
+    return {"ok": True, "attemptId": data.attemptId}
 
 if __name__ == "__main__":
     # optional: run standalone for debugging
