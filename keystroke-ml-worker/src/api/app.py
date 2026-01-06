@@ -16,6 +16,37 @@ storage = KeystrokeStorage(
 feature_extractor = FeatureExtractor()
 
 
+def _chunk_keystrokes(keystrokes: List[Dict[str, Any]], window_size: int, step: int) -> List[List[Dict[str, Any]]]:
+    if window_size <= 0:
+        return []
+    if step <= 0:
+        step = window_size
+    if len(keystrokes) < window_size:
+        return [keystrokes]
+    chunks: List[List[Dict[str, Any]]] = []
+    for start in range(0, len(keystrokes) - window_size + 1, step):
+        chunks.append(keystrokes[start : start + window_size])
+    if not chunks:
+        chunks.append(keystrokes)
+    return chunks
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-8
+    return float(np.dot(a, b) / denom)
+
+
+def _extract_feature_matrix(keystrokes: List[Dict[str, Any]], window_size: int, step: int) -> np.ndarray:
+    chunks = _chunk_keystrokes(keystrokes, window_size=window_size, step=step)
+    vectors: List[np.ndarray] = []
+    for c in chunks:
+        raw = feature_extractor.extract_features(c)
+        vectors.append(np.array(raw, dtype=float))
+    if not vectors:
+        raise ValueError("No keystroke features extracted")
+    return np.vstack(vectors)
+
+
 class KeystrokeEvent(BaseModel):
     key: str
     event: str  # 'keydown' or 'keyup'
@@ -38,26 +69,29 @@ async def enroll_keystroke(data: KeystrokeRequest):
                 detail="At least 150 keystrokes required for enrollment",
             )
 
-        # Extract features
-        raw_features = feature_extractor.extract_features(
-            [k.dict() for k in data.keystrokes]
-        )
-
-        raw_features = np.array(raw_features, dtype=float)
-
-        # ✅ Z-score normalization
-        mean = raw_features.mean()
-        std = raw_features.std() or 1.0
-        normalized_features = (raw_features - mean) / std
+        keystrokes = [k.dict() for k in data.keystrokes]
+        X = _extract_feature_matrix(keystrokes, window_size=80, step=40)
+        mu = X.mean(axis=0)
+        sigma = X.std(axis=0)
+        sigma = np.where(sigma == 0, 1.0, sigma)
+        Xn = (X - mu) / sigma
+        centroid = Xn.mean(axis=0)
+        sims = np.array([_cosine_similarity(v, centroid) for v in Xn], dtype=float)
+        thr = float(np.mean(sims) - 2.0 * np.std(sims))
+        thr = float(max(0.55, min(0.98, thr)))
 
         model_data = {
             "user_id": data.user_id,
-            "features": normalized_features.tolist(),
-            "scaler": {"mean": mean, "std": std},
-            "threshold": 0.85,  # ✅ cosine similarity baseline
+            "version": 2,
+            "centroid": centroid.tolist(),
+            "scaler": {"mean": mu.tolist(), "std": sigma.tolist()},
+            "threshold": thr,
             "metadata": {
                 "keystroke_count": len(data.keystrokes),
-                "feature_vector_length": len(raw_features),
+                "feature_vector_length": int(X.shape[1]),
+                "windows": int(X.shape[0]),
+                "window_size": 80,
+                "step": 40,
             },
         }
 
@@ -66,7 +100,7 @@ async def enroll_keystroke(data: KeystrokeRequest):
         return {
             "success": True,
             "message": "Keystroke enrollment completed",
-            "features": len(raw_features),
+            "features": int(X.shape[1]),
         }
 
     except Exception as e:
@@ -80,15 +114,46 @@ async def verify_keystroke(data: KeystrokeRequest):
         if not model_data:
             raise HTTPException(404, "User not enrolled")
 
-        # Extract features
-        raw_features = feature_extractor.extract_features(
-            [k.dict() for k in data.keystrokes]
-        )
+        keystrokes = [k.dict() for k in data.keystrokes]
 
+        if "centroid" in model_data and isinstance(model_data.get("scaler"), dict):
+            X = _extract_feature_matrix(
+                keystrokes,
+                window_size=int(model_data.get("metadata", {}).get("window_size", 80)),
+                step=int(model_data.get("metadata", {}).get("step", 40)),
+            )
+
+            mu = np.array(model_data["scaler"]["mean"], dtype=float)
+            sigma = np.array(model_data["scaler"]["std"], dtype=float)
+            sigma = np.where(sigma == 0, 1.0, sigma)
+
+            if X.shape[1] != mu.shape[0]:
+                raise HTTPException(
+                    400,
+                    f"Feature length mismatch: current={int(X.shape[1])}, enrolled={int(mu.shape[0])}. "
+                    f"Please re-enroll your typing profile to fix this issue."
+                )
+
+            Xn = (X - mu) / sigma
+            centroid = np.array(model_data["centroid"], dtype=float)
+            sims = np.array([_cosine_similarity(v, centroid) for v in Xn], dtype=float)
+            similarity = float(np.median(sims))
+            threshold = float(model_data.get("threshold", 0.75))
+            authenticated = similarity >= threshold
+            confidence = max(0.0, min(1.0, (similarity - threshold) / (1 - threshold)))
+
+            return {
+                "authenticated": authenticated,
+                "similarity": similarity,
+                "confidence": confidence,
+                "threshold": threshold,
+                "user_id": data.user_id,
+            }
+
+        raw_features = feature_extractor.extract_features(keystrokes)
         raw_features = np.array(raw_features, dtype=float)
         stored_features = np.array(model_data["features"], dtype=float)
 
-        # ✅ Feature length check (CRITICAL)
         if len(raw_features) != len(stored_features):
             raise HTTPException(
                 400,
@@ -96,12 +161,10 @@ async def verify_keystroke(data: KeystrokeRequest):
                 f"Please re-enroll your typing profile to fix this issue."
             )
 
-        # ✅ Normalize using stored scaler
         mean = model_data["scaler"]["mean"]
         std = model_data["scaler"]["std"] or 1.0
         normalized_features = (raw_features - mean) / std
 
-        # ✅ Cosine similarity
         similarity = float(
             np.dot(stored_features, normalized_features)
             / (
@@ -112,7 +175,6 @@ async def verify_keystroke(data: KeystrokeRequest):
 
         threshold = model_data.get("threshold", 0.85)
         authenticated = similarity >= threshold
-
         confidence = max(0.0, min(1.0, (similarity - threshold) / (1 - threshold)))
 
         return {
