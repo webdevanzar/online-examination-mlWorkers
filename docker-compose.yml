@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Online Examination – ML Workers  |  docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Usage:
+#   docker compose up --build          # first run (builds images)
+#   docker compose up -d               # subsequent runs (detached)
+#   docker compose down                # stop all workers
+#
+# Ports exposed on localhost:
+#   8000  → keystroke-ml-worker
+#   8001  → face-ml-worker
+#   8002  → voice-ml-worker
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── 1. Keystroke ML Worker ──────────────────────────────────────────────────
+  keystroke-ml-worker:
+    build:
+      context: ./keystroke-ml-worker
+      dockerfile: Dockerfile
+    container_name: keystroke-ml-worker
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  # ── 2. Face ML Worker ───────────────────────────────────────────────────────
+  face-ml-worker:
+    build:
+      context: ./face-ml-worker
+      dockerfile: Dockerfile
+    container_name: face-ml-worker
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  # ── 3. Voice ML Worker ──────────────────────────────────────────────────
+  # DISABLED: Docker Desktop on Windows cannot pass a physical microphone
+  # into a Linux container.  Run this worker natively instead:
+  #
+  #   cd voice-ml-worker
+  #   venv\Scripts\activate
+  #   uvicorn src.server:app --reload --host 0.0.0.0 --port 8002
+  #
+  # To re-enable in Docker (e.g. on Linux), uncomment the block below:
+  #
+  # voice-ml-worker:
+  #   build:
+  #     context: ./voice-ml-worker
+  #     dockerfile: Dockerfile
+  #   container_name: voice-ml-worker
+  #   ports:
+  #     - "8002:8002"
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - BACKEND_URL=http://host.docker.internal:3000
+  #   restart: unless-stopped
